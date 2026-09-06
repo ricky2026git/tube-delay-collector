@@ -8,6 +8,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const GOOD_SERVICE_SEVERITY = 10;
 const MODES = 'tube,dlr,overground,elizabeth-line';
+const GOOD_CHECKS_TO_CLOSE = 2; // require 2 consecutive good checks (~10 min) before closing
 
 function cleanStationName(rawName) {
   return rawName
@@ -85,28 +86,64 @@ async function run() {
           category: worst.disruption?.category || null,
           tfl_last_updated: worst.disruption?.lastUpdate || null,
           mentioned_stations: mentionedStations,
+          peak_severity: worst.statusSeverity,
+          peak_status_description: worst.statusSeverityDescription,
+          peak_reason: worst.reason || null,
+          good_streak: 0,
           raw: worst,
           started_at: new Date().toISOString(),
         });
         if (insertErr) console.error('Insert error for', lineName, insertErr);
         else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${mentionedStations.join(', ') || 'none found'})`);
-      }
-    } else {
-      if (ongoingRecord) {
-        const endedAt = new Date();
-        const startedAt = new Date(ongoingRecord.started_at);
-        const durationMinutes = Math.round((endedAt - startedAt) / 60000);
-
+      } else {
+        // Still delayed — reset good streak, and update peak if this is worse than what we've seen so far
+        const isWorse = worst.statusSeverity < ongoingRecord.peak_severity;
         const { error: updateErr } = await supabase
           .from('delays')
           .update({
-            ended_at: endedAt.toISOString(),
-            duration_minutes: durationMinutes,
+            severity: worst.statusSeverity,
+            status_description: worst.statusSeverityDescription,
+            reason: worst.reason || null,
+            good_streak: 0,
+            ...(isWorse && {
+              peak_severity: worst.statusSeverity,
+              peak_status_description: worst.statusSeverityDescription,
+              peak_reason: worst.reason || null,
+            }),
           })
           .eq('id', ongoingRecord.id);
 
         if (updateErr) console.error('Update error for', lineName, updateErr);
-        else console.log(`Delay resolved: ${lineName} - lasted ${durationMinutes} min`);
+        else if (isWorse) console.log(`Delay escalated: ${lineName} - now ${worst.statusSeverityDescription}`);
+      }
+    } else {
+      if (ongoingRecord) {
+        const newStreak = (ongoingRecord.good_streak || 0) + 1;
+
+        if (newStreak >= GOOD_CHECKS_TO_CLOSE) {
+          const endedAt = new Date();
+          const startedAt = new Date(ongoingRecord.started_at);
+          const durationMinutes = Math.round((endedAt - startedAt) / 60000);
+
+          const { error: updateErr } = await supabase
+            .from('delays')
+            .update({
+              ended_at: endedAt.toISOString(),
+              duration_minutes: durationMinutes,
+            })
+            .eq('id', ongoingRecord.id);
+
+          if (updateErr) console.error('Update error for', lineName, updateErr);
+          else console.log(`Delay resolved: ${lineName} - lasted ${durationMinutes} min (peak: ${ongoingRecord.peak_status_description})`);
+        } else {
+          const { error: streakErr } = await supabase
+            .from('delays')
+            .update({ good_streak: newStreak })
+            .eq('id', ongoingRecord.id);
+
+          if (streakErr) console.error('Streak update error for', lineName, streakErr);
+          else console.log(`${lineName} showing Good Service (${newStreak}/${GOOD_CHECKS_TO_CLOSE} checks) - not yet closing`);
+        }
       }
     }
   }
