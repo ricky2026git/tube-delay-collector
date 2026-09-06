@@ -7,9 +7,41 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const GOOD_SERVICE_SEVERITY = 10;
+const MODES = 'tube,dlr,overground,elizabeth-line';
+
+function cleanStationName(rawName) {
+  return rawName
+    .replace(/\s*(Underground|DLR|Rail)?\s*Station$/i, '')
+    .trim();
+}
+
+async function getStationNamesForLine(lineId) {
+  const res = await fetch(`https://api.tfl.gov.uk/Line/${lineId}/StopPoints?app_key=${TFL_APP_KEY}`);
+  if (!res.ok) {
+    console.error('StopPoints fetch error for', lineId, res.status, await res.text());
+    return [];
+  }
+  const stopPoints = await res.json();
+  const names = stopPoints
+    .map((sp) => cleanStationName(sp.commonName || ''))
+    .filter((name) => name.length > 2);
+
+  return [...new Set(names)].sort((a, b) => b.length - a.length);
+}
+
+function findMentionedStations(reasonText, stationNames) {
+  if (!reasonText) return [];
+  const found = [];
+  for (const name of stationNames) {
+    if (reasonText.includes(name)) {
+      found.push(name);
+    }
+  }
+  return found;
+}
 
 async function run() {
-  const res = await fetch(`https://api.tfl.gov.uk/Line/Mode/tube,dlr,overground,elizabeth-line/Status?app_key=${TFL_APP_KEY}`);
+  const res = await fetch(`https://api.tfl.gov.uk/Line/Mode/${MODES}/Status?app_key=${TFL_APP_KEY}`);
   if (!res.ok) {
     console.error('TfL API error', res.status, await res.text());
     return;
@@ -18,6 +50,7 @@ async function run() {
 
   for (const line of lines) {
     const lineName = line.name;
+    const lineId = line.id;
     const statuses = line.lineStatuses || [];
     if (statuses.length === 0) continue;
 
@@ -41,6 +74,9 @@ async function run() {
 
     if (!isGoodService) {
       if (!ongoingRecord) {
+        const stationNames = await getStationNamesForLine(lineId);
+        const mentionedStations = findMentionedStations(worst.reason, stationNames);
+
         const { error: insertErr } = await supabase.from('delays').insert({
           line: lineName,
           severity: worst.statusSeverity,
@@ -48,11 +84,12 @@ async function run() {
           reason: worst.reason || null,
           category: worst.disruption?.category || null,
           tfl_last_updated: worst.disruption?.lastUpdate || null,
+          mentioned_stations: mentionedStations,
           raw: worst,
           started_at: new Date().toISOString(),
         });
         if (insertErr) console.error('Insert error for', lineName, insertErr);
-        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription}`);
+        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${mentionedStations.join(', ') || 'none found'})`);
       }
     } else {
       if (ongoingRecord) {
