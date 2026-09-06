@@ -9,7 +9,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const GOOD_SERVICE_SEVERITY = 10;
 
 async function run() {
-  const res = await fetch(`https://api.tfl.gov.uk/Line/Mode/tube/Status?app_key=${TFL_APP_KEY}`);
+  const res = await fetch(`https://api.tfl.gov.uk/Line/Mode/tube,dlr,overground,elizabeth-line/Status?app_key=${TFL_APP_KEY}`);
   if (!res.ok) {
     console.error('TfL API error', res.status, await res.text());
     return;
