@@ -10,6 +10,17 @@ const GOOD_SERVICE_SEVERITY = 10;
 const MODES = 'tube,dlr,overground,elizabeth-line';
 const GOOD_CHECKS_TO_CLOSE = 2; // require 2 consecutive good checks (~10 min) before closing
 
+const LONDON_LAT = 51.5074;
+const LONDON_LON = -0.1278;
+
+const WEATHER_CODES = {
+  0: 'Clear', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+  45: 'Fog', 48: 'Fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+  61: 'Light rain', 63: 'Rain', 65: 'Heavy rain', 71: 'Light snow', 73: 'Snow', 75: 'Heavy snow',
+  80: 'Rain showers', 81: 'Rain showers', 82: 'Violent rain showers',
+  95: 'Thunderstorm', 96: 'Thunderstorm with hail', 99: 'Thunderstorm with hail',
+};
+
 function cleanStationName(rawName) {
   return rawName
     .replace(/\s*(Underground|DLR|Rail)?\s*Station$/i, '')
@@ -39,6 +50,28 @@ function findMentionedStations(reasonText, stationNames) {
     }
   }
   return found;
+}
+
+async function getCurrentWeather() {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${LONDON_LAT}&longitude=${LONDON_LON}&current=temperature_2m,precipitation,wind_speed_10m,weather_code`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('Weather fetch error', res.status, await res.text());
+      return null;
+    }
+    const data = await res.json();
+    const c = data.current;
+    return {
+      temp_c: c.temperature_2m,
+      precipitation_mm: c.precipitation,
+      wind_kph: c.wind_speed_10m,
+      condition: WEATHER_CODES[c.weather_code] || `Code ${c.weather_code}`,
+    };
+  } catch (err) {
+    console.error('Weather fetch exception', err);
+    return null;
+  }
 }
 
 async function run() {
@@ -77,6 +110,7 @@ async function run() {
       if (!ongoingRecord) {
         const stationNames = await getStationNamesForLine(lineId);
         const mentionedStations = findMentionedStations(worst.reason, stationNames);
+        const weather = await getCurrentWeather();
 
         const { error: insertErr } = await supabase.from('delays').insert({
           line: lineName,
@@ -90,13 +124,16 @@ async function run() {
           peak_status_description: worst.statusSeverityDescription,
           peak_reason: worst.reason || null,
           good_streak: 0,
+          weather_temp_c: weather?.temp_c ?? null,
+          weather_precipitation_mm: weather?.precipitation_mm ?? null,
+          weather_wind_kph: weather?.wind_kph ?? null,
+          weather_condition: weather?.condition ?? null,
           raw: worst,
           started_at: new Date().toISOString(),
         });
         if (insertErr) console.error('Insert error for', lineName, insertErr);
-        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${mentionedStations.join(', ') || 'none found'})`);
+        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${mentionedStations.join(', ') || 'none found'}) (weather: ${weather?.condition || 'unknown'})`);
       } else {
-        // Still delayed — reset good streak, and update peak if this is worse than what we've seen so far
         const isWorse = worst.statusSeverity < ongoingRecord.peak_severity;
         const { error: updateErr } = await supabase
           .from('delays')
