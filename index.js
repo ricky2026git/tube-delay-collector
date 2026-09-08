@@ -106,6 +106,8 @@ async function run() {
       const currentMentions = findMentionedStations(worst.reason, stationNames);
 
       if (!ongoingRecord) {
+        const weather = await getCurrentWeather();
+
         const { error: insertErr } = await supabase.from('delays').insert({
           line: lineName,
           severity: worst.statusSeverity,
@@ -118,12 +120,15 @@ async function run() {
           peak_status_description: worst.statusSeverityDescription,
           peak_reason: worst.reason || null,
           good_streak: 0,
-          weather_temp_c: (await getCurrentWeather())?.temp_c ?? null,
+          weather_temp_c: weather?.temp_c ?? null,
+          weather_precipitation_mm: weather?.precipitation_mm ?? null,
+          weather_wind_kph: weather?.wind_kph ?? null,
+          weather_condition: weather?.condition ?? null,
           raw: worst,
           started_at: new Date().toISOString(),
         });
         if (insertErr) console.error('Insert error for', lineName, insertErr);
-        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${currentMentions.join(', ') || 'none found'})`);
+        else console.log(`New delay logged: ${lineName} - ${worst.statusSeverityDescription} (stations: ${currentMentions.join(', ') || 'none found'}) (weather: ${weather?.condition || 'unknown'})`);
       } else {
         const isWorse = worst.statusSeverity < ongoingRecord.peak_severity;
         const mergedStations = [...new Set([...(ongoingRecord.mentioned_stations || []), ...currentMentions])];
