@@ -120,6 +120,7 @@ async function run() {
           peak_status_description: worst.statusSeverityDescription,
           peak_reason: worst.reason || null,
           good_streak: 0,
+          good_since: null,
           weather_temp_c: weather?.temp_c ?? null,
           weather_precipitation_mm: weather?.precipitation_mm ?? null,
           weather_wind_kph: weather?.wind_kph ?? null,
@@ -140,6 +141,7 @@ async function run() {
             status_description: worst.statusSeverityDescription,
             reason: worst.reason || null,
             good_streak: 0,
+            good_since: null,
             mentioned_stations: mergedStations,
             raw: worst,
             ...(isWorse && {
@@ -155,16 +157,17 @@ async function run() {
       }
     } else {
       if (ongoingRecord) {
+        // Remember when Good Service FIRST appeared; that is the end time we record.
+        const goodSince = ongoingRecord.good_since ? new Date(ongoingRecord.good_since) : new Date();
         const newStreak = (ongoingRecord.good_streak || 0) + 1;
 
         if (newStreak >= GOOD_CHECKS_TO_CLOSE) {
-          const endedAt = new Date();
           const startedAt = new Date(ongoingRecord.started_at);
-          const durationMinutes = Math.round((endedAt - startedAt) / 60000);
+          const durationMinutes = Math.max(0, Math.round((goodSince - startedAt) / 60000));
 
           const { error: updateErr } = await supabase
             .from('delays')
-            .update({ ended_at: endedAt.toISOString(), duration_minutes: durationMinutes })
+            .update({ ended_at: goodSince.toISOString(), duration_minutes: durationMinutes })
             .eq('id', ongoingRecord.id);
 
           if (updateErr) console.error('Update error for', lineName, updateErr);
@@ -172,7 +175,7 @@ async function run() {
         } else {
           const { error: streakErr } = await supabase
             .from('delays')
-            .update({ good_streak: newStreak })
+            .update({ good_streak: newStreak, good_since: goodSince.toISOString() })
             .eq('id', ongoingRecord.id);
           if (streakErr) console.error('Streak update error for', lineName, streakErr);
         }
